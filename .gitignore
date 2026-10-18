@@ -1,0 +1,26 @@
+# Publish only maintained sources. Historical local deployment/debug scripts,
+# robot motion tools, reports, logs, photos and machine settings stay local.
+/*
+!/.gitignore
+!/.gitattributes
+!/README.md
+!/server.py
+!/probe_camera.py
+!/index.html
+!/client_example.py
+!/check_cameras.py
+!/requirements-server.txt
+!/requirements-client.txt
+!/Open-Cameras.cmd
+!/docs/
+!/scripts/
+!/tests/
+!/.github/
+__pycache__/
+*.pyc
+*.log
+.env
+.env.*
+*.local.json
+*.jpg
+*.png

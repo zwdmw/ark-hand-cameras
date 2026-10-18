@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>手部相机 · 双路视频</title>
+  <style>
+    :root { color-scheme: dark; --bg:#101722; --panel:#192333; --line:#2b3c52; --muted:#9eafc2; --accent:#74c8f6; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--bg); color:#edf2fa; font:15px system-ui,"Microsoft YaHei",sans-serif; }
+    main { max-width:1680px; margin:auto; padding:28px; }
+    header { display:flex; justify-content:space-between; align-items:center; gap:20px; margin-bottom:24px; }
+    h1 { font-size:28px; margin:0 0 8px; }
+    p { margin:6px 0; color:var(--muted); line-height:1.5; }
+    .badge { background:#163b35; color:#9ce5c2; border:1px solid #286453; border-radius:30px; padding:8px 15px; white-space:nowrap; }
+    #cameras { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:22px; }
+    article { background:var(--panel); border:1px solid var(--line); border-radius:14px; overflow:hidden; }
+    .title { padding:20px 20px 14px; display:flex; align-items:center; justify-content:space-between; gap:10px; }
+    h2 { margin:0 0 5px; font-size:19px; }
+    .serial { font:13px ui-monospace,Consolas,monospace; color:var(--muted); }
+    .video { margin:0 20px; background:#090f18; aspect-ratio:3/2; display:grid; place-items:center; border-radius:9px; overflow:hidden; position:relative; }
+    .video img { width:100%; height:100%; object-fit:contain; position:absolute; inset:0; }
+    .placeholder { color:var(--muted); padding:20px; text-align:center; }
+    .stats { display:flex; gap:14px; flex-wrap:wrap; padding:12px 20px; color:var(--muted); font-size:13px; min-height:40px; }
+    .tools { display:flex; gap:10px; padding:0 20px 16px; align-items:center; flex-wrap:wrap; }
+    button, a.button { background:#26374c; border:1px solid #415873; color:#e8f2ff; padding:8px 13px; border-radius:7px; font:inherit; font-size:13px; cursor:pointer; text-decoration:none; }
+    button:hover,a.button:hover { background:#354d68; }
+    button.primary { background:#23729b; border-color:#398db5; color:white; }
+    button:disabled { opacity:.5; cursor:wait; }
+    .parameters { border-top:1px solid var(--line); padding:18px 20px; }
+    .param-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:13px 18px; }
+    label { display:flex; flex-direction:column; gap:6px; color:#c0d1e4; font-size:13px; }
+    input:not([type=checkbox]),select { width:100%; min-height:35px; border:1px solid #3a4b63; border-radius:6px; padding:7px 9px; color:#e5edf8; background:#101b2b; font:14px system-ui; }
+    input:focus,select:focus { outline:2px solid var(--accent); outline-offset:1px; }
+    input[type=checkbox] { width:18px; height:18px; accent-color:#55b9f1; }
+    small { font-size:11px; color:#859ab1; }
+    details { margin-top:18px; }
+    summary { color:var(--accent); cursor:pointer; margin-bottom:12px; }
+    .actions { display:flex; gap:10px; margin-top:18px; align-items:center; flex-wrap:wrap; }
+    .message { font-size:13px; color:#9be1be; line-height:1.5; overflow-wrap:anywhere; }
+    .message.error { color:#ffada2; }
+    footer { padding:20px 0; color:var(--muted); font-size:13px; }
+    .readonly { padding:0 20px 18px; color:#91a6bd; font-size:12px; }
+    @media(max-width:1000px) { #cameras { grid-template-columns:1fr; } main { padding:18px; } }
+    @media(max-width:520px) { header { align-items:flex-start; flex-direction:column; } .param-grid { gap:12px; } }
+  </style>
+</head>
+<body><main>
+  <header><div><h1>手部相机 · 双路视频</h1><p>两路画面独立查看、独立调参</p></div><span id="health" class="badge">正在连接</span></header>
+  <div id="cameras"></div>
+  <footer>调整后自动恢复视频。曝光单位为微秒，增益单位为 dB；相机裁剪会改变原始画面范围。参数取值范围由相机返回。</footer>
+</main>
+<script>
+const cards = new Map();
+const names = {
+  ExposureTime:'曝光时间（µs）',Gain:'增益（dB）',AcquisitionFrameRate:'采集帧率（fps）',
+  ExposureAuto:'自动曝光',GainAuto:'自动增益',BalanceWhiteAuto:'自动白平衡',
+  AcquisitionFrameRateEnable:'启用帧率控制',Gamma:'Gamma',GammaEnable:'启用 Gamma',
+  ReverseX:'水平翻转',ReverseY:'垂直翻转',Width:'采集宽度',Height:'采集高度',OffsetX:'水平偏移',OffsetY:'垂直偏移'
+};
+const translations={Off:'关闭',Once:'单次',Continuous:'持续自动'};
+const basic=['ExposureAuto','ExposureTime','GainAuto','Gain','AcquisitionFrameRateEnable','AcquisitionFrameRate','BalanceWhiteAuto'];
+const advanced=['Width','Height','OffsetX','OffsetY','ReverseX','ReverseY','GammaEnable','Gamma'];
+function el(tag, text, cls) { const x=document.createElement(tag);if(text!==undefined)x.textContent=text;if(cls)x.className=cls;return x; }
+async function request(path,options) {
+  const response=await fetch(path,{cache:'no-store',...options});
+  const data=await response.json();
+  if(!response.ok) throw new Error(data.error || '请求失败');
+  return data;
+}
+function message(card,text,error=false) { card.message.textContent=text;card.message.className='message'+(error?' error':''); }
+function makeCamera(camera,index) {
+  const article=el('article'),head=el('div',undefined,'title'),identity=el('div');
+  identity.append(el('h2','相机 '+(index+1)),el('div',camera.serial+' · '+camera.ip,'serial'));
+  const status=el('span','连接中','serial');head.append(identity,status);
+  const video=el('div',undefined,'video'),placeholder=el('span','正在等待相机画面…','placeholder'),img=el('img');
+  img.alt='相机 '+camera.serial+' 实时画面';video.append(placeholder,img);
+  const stats=el('div',undefined,'stats'),tools=el('div',undefined,'tools');
+  const full=el('a','原始分辨率快照','button');full.href='/snapshot/'+camera.serial+'.jpg?full=1';full.target='_blank';
+  const refresh=el('button','重连画面');refresh.type='button';
+  const form=el('form',undefined,'parameters'),grid=el('div',undefined,'param-grid');
+  const details=el('details'),summary=el('summary','画面裁剪、翻转和 Gamma'),advancedGrid=el('div',undefined,'param-grid');details.append(summary,advancedGrid);
+  const actions=el('div',undefined,'actions'),apply=el('button','应用参数','primary'),read=el('button','读取当前参数'),info=el('span',undefined,'message');
+  apply.type='submit';read.type='button';actions.append(apply,read,info);form.append(grid,details,actions);
+  const readonly=el('div',undefined,'readonly');article.append(head,video,stats,tools,form,readonly);tools.append(full,refresh);
+  document.getElementById('cameras').append(article);
+  const card={serial:camera.serial,img,placeholder,status,stats,grid,advancedGrid,form,apply,read,message:info,readonly,fields:new Map(),parameters:null,streaming:false,nextRetry:0,busy:false};
+  img.onerror=()=>{card.streaming=false;card.nextRetry=Date.now()+1500;};
+  refresh.onclick=()=>{card.streaming=false;card.nextRetry=0;startStream(card);};
+  read.onclick=async()=>{read.disabled=true;try{await loadParameters(card);message(card,'已读取相机当前参数');}catch(e){message(card,e.message,true);}finally{read.disabled=false;}};
+  form.onsubmit=async event=>{
+    event.preventDefault();if(card.busy)return;
+    const patch={};
+    for(const [name,field] of card.fields) {
+      const entry=card.parameters[name];
+      const value=entry.type==='bool'?field.checked:Number(field.value);
+      const initial=entry.type==='bool'?field.dataset.initial==='true':Number(field.dataset.initial);
+      if(value!==initial)patch[name]=value;
+    }
+    if(!Object.keys(patch).length){message(card,'参数没有变化');return;}
+    card.busy=true;apply.disabled=true;read.disabled=true;message(card,'正在应用参数…');
+    try {
+      const result=await request('/api/cameras/'+card.serial+'/parameters',{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(patch)});
+      fillParameters(card,result.parameters);message(card,'参数已更新，画面继续采集');
+    }catch(e){message(card,e.message,true);}finally{card.busy=false;apply.disabled=false;read.disabled=false;}
+  };
+  cards.set(camera.serial,card);fillParameters(card,camera.parameters);return card;
+}
+function fillParameters(card,parameters) {
+  if(!parameters || !Object.keys(parameters).length)return;
+  card.parameters=parameters;card.fields.clear();card.grid.replaceChildren();card.advancedGrid.replaceChildren();
+  for(const [group,target] of [[basic,card.grid],[advanced,card.advancedGrid]]) for(const name of group) {
+    const entry=parameters[name];if(!entry)continue;
+    const label=el('label',names[name]),input=el(entry.type==='enum'?'select':'input');input.name=name;
+    if(entry.type==='enum') {
+      for(const option of entry.options) {const item=el('option',translations[option.label] || option.label);item.value=option.value;input.append(item);}
+      input.value=entry.value;
+    } else if(entry.type==='bool') {input.type='checkbox';input.checked=entry.value;}
+    else {
+      input.type='number';let shown=entry.value;
+      if(entry.type==='float') {shown=Math.round(shown*1000)/1000;if(shown>entry.max)shown=Math.floor(entry.max*1000)/1000;if(shown<entry.min)shown=Math.ceil(entry.min*1000)/1000;}
+      input.value=shown;input.min=entry.min;input.max=entry.max;input.step=entry.type==='int'?entry.step:'any';
+    }
+    input.dataset.initial=entry.type==='bool'?String(input.checked):input.value;
+    label.append(input);
+    if(entry.min!==undefined)label.append(el('small',entry.min.toFixed?String(Math.round(entry.min*100)/100)+' — '+String(Math.round(entry.max*100)/100):''));
+    target.append(label);card.fields.set(name,input);
+  }
+  for(const [manual,automatic] of [['ExposureTime','ExposureAuto'],['Gain','GainAuto']]) {
+    const auto=card.fields.get(automatic),field=card.fields.get(manual);
+    if(auto&&field){const update=()=>{field.disabled=Number(auto.value)!==0;};auto.onchange=update;update();}
+  }
+  for(const [dimension,offset,sensor] of [['Width','OffsetX','SensorWidth'],['Height','OffsetY','SensorHeight']]) {
+    const size=card.fields.get(dimension),position=card.fields.get(offset),limit=parameters[sensor];
+    if(size&&position&&limit) {
+      const update=()=>{size.max=limit.value-Number(position.value);position.max=limit.value-Number(size.value);};
+      size.oninput=update;position.oninput=update;update();
+    }
+  }
+  const pixel=parameters.PixelFormat;card.readonly.textContent='型号 MV-CS200-10GC'+(pixel?' · '+pixel.symbol:'')+' · 连续采集';
+}
+async function loadParameters(card) { const data=await request('/api/cameras/'+card.serial+'/parameters');fillParameters(card,data.parameters); }
+function startStream(card) {
+  if(card.streaming || Date.now()<card.nextRetry)return;
+  card.streaming=true;card.img.src='/stream/'+card.serial+'.mjpg?v='+Date.now();
+}
+async function poll() {
+  try {
+    const data=await request('/api/cameras');let running=0;
+    data.cameras.forEach((camera,index)=>{
+      const card=cards.get(camera.serial)||makeCamera(camera,index);
+      if(!card.parameters && camera.status==='running')fillParameters(card,camera.parameters);
+      const frame=camera.last_frame;card.status.textContent=camera.status==='running'?'采集中':camera.status==='error'?'连接失败':'等待画面';
+      if(camera.status==='running'){running++;startStream(card);card.placeholder.textContent='';}
+      else {card.placeholder.textContent=camera.error || '相机正在准备画面…';}
+      card.stats.textContent=frame?frame.width+' × '+frame.height+' · '+camera.fps.toFixed(1)+' fps · '+camera.frame_count+' 帧 · 丢包 '+camera.lost_packets_total:'暂未收到图像';
+      if(camera.error && !card.busy)message(card,camera.error,true);
+    });
+    document.getElementById('health').textContent=running+' / '+data.cameras.length+' 路在线';
+  }catch(e){document.getElementById('health').textContent='连接服务中…';}
+  setTimeout(poll,1000);
+}
+poll();
+</script></body></html>
